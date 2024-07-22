@@ -301,6 +301,7 @@ async def async_request_openai_chat_completions(
         "v1/chat/completions"
     ), "OpenAI Chat Completions API URL must end with 'v1/chat/completions'."
 
+
     async with aiohttp.ClientSession(timeout=AIOHTTP_TIMEOUT) as session:
         assert not request_func_input.use_beam_search
         payload = {

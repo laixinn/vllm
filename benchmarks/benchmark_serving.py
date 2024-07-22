@@ -176,7 +176,7 @@ def sample_sonnet_requests(
 
 async def get_request(
     input_requests: List[Tuple[str, int, int]],
-    request_rate: float,
+    request_rate: float
 ) -> AsyncGenerator[Tuple[str, int, int], None]:
     input_requests = iter(input_requests)
     for request in input_requests:
@@ -248,7 +248,7 @@ async def benchmark(
     best_of: int,
     use_beam_search: bool,
     request_rate: float,
-    disable_tqdm: bool,
+    disable_tqdm: bool
 ):
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS.get(backend)
@@ -276,6 +276,12 @@ async def benchmark(
     print(f"Traffic request rate: {request_rate}")
 
     pbar = None if disable_tqdm else tqdm(total=len(input_requests))
+
+    # async def warp_func(request_func_input, pbar) -> RequestFuncOutput:
+    #     try:
+    #         return await request_func(request_func_input=request_func_input, pbar=pbar)
+    #     except asyncio.CancelledError as ex:
+    #         pbar.update(1)
 
     benchmark_start_time = time.perf_counter()
     tasks = []
@@ -440,7 +446,7 @@ def main(args: argparse.Namespace):
             best_of=args.best_of,
             use_beam_search=args.use_beam_search,
             request_rate=args.request_rate,
-            disable_tqdm=args.disable_tqdm,
+            disable_tqdm=args.disable_tqdm
         ))
 
     # Save config and results to json
@@ -549,7 +555,7 @@ if __name__ == "__main__":
         "--num-prompts",
         type=int,
         default=1000,
-        help="Number of prompts to process.",
+        help="Number of prompts to process",
     )
     parser.add_argument(
         "--sharegpt-output-len",
