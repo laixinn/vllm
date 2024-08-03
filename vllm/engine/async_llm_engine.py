@@ -510,7 +510,8 @@ class AsyncLLMEngine:
     async def run_engine_loop(self):
         has_requests_in_progress = False
         while True:
-            if not has_requests_in_progress:
+            has_unfinished_requests = self.engine.scheduler.waiting or self.engine.scheduler.swapped
+            if not has_requests_in_progress and not has_unfinished_requests:
                 logger.debug("Waiting for new requests...")
                 await self._request_tracker.wait_for_new_requests()
                 logger.debug("Got new requests!")
@@ -558,6 +559,7 @@ class AsyncLLMEngine:
 
         if not self.is_running:
             if self.start_engine_loop:
+                logger.debug("now starting background loop")
                 self.start_background_loop()
             else:
                 raise AsyncEngineDeadError(

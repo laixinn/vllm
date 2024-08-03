@@ -39,7 +39,7 @@ DEFAULT_LOGGING_CONFIG = {
         "vllm": {
             "handlers": ["vllm"],
             "level": "DEBUG",
-            "propagate": False,
+            "propagate": True,#False,
         },
     },
     "version": 1,

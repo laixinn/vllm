@@ -460,6 +460,8 @@ class SequenceGroup:
         self.pooling_params = pooling_params
         self.encoder_seq = encoder_seq
 
+        self.remaining_decode = 0
+
     @property
     def prompt(self) -> Optional[str]:
         # All sequences in the group should have the same prompt.
