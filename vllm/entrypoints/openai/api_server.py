@@ -24,7 +24,7 @@ from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
                                               ChatCompletionResponse,
                                               CompletionRequest,
                                               EmbeddingRequest, ErrorResponse)
-from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
+from vllm.entrypoints.openai.serving_chat import OpenAIServingChat, OpenAIServingChatV2
 from vllm.entrypoints.openai.serving_completion import OpenAIServingCompletion
 from vllm.entrypoints.openai.serving_embedding import OpenAIServingEmbedding
 from vllm.logger import init_logger
@@ -101,6 +101,21 @@ async def show_version():
 async def create_chat_completion(request: ChatCompletionRequest,
                                  raw_request: Request):
     generator = await openai_serving_chat.create_chat_completion(
+        request, raw_request)
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(),
+                            status_code=generator.code)
+    if request.stream:
+        return StreamingResponse(content=generator,
+                                 media_type="text/event-stream")
+    else:
+        assert isinstance(generator, ChatCompletionResponse)
+        return JSONResponse(content=generator.model_dump())
+    
+@app.post("/v1/chat/completions-v2")
+async def create_chat_completion(request: ChatCompletionRequest,
+                                 raw_request: Request):
+    generator = await openai_serving_chat_v2.create_chat_completion(
         request, raw_request)
     if isinstance(generator, ErrorResponse):
         return JSONResponse(content=generator.model_dump(),
@@ -201,6 +216,11 @@ if __name__ == "__main__":
         model_config = asyncio.run(engine.get_model_config())
 
     openai_serving_chat = OpenAIServingChat(engine, model_config,
+                                            served_model_names,
+                                            args.response_role,
+                                            args.lora_modules,
+                                            args.chat_template)
+    openai_serving_chat_v2 = OpenAIServingChatV2(engine, model_config,
                                             served_model_names,
                                             args.response_role,
                                             args.lora_modules,

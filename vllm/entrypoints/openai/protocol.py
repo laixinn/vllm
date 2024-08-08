@@ -94,6 +94,12 @@ class UsageInfo(OpenAIBaseModel):
     prompt_tokens: int = 0
     total_tokens: int = 0
     completion_tokens: Optional[int] = 0
+    # additional fields
+    first_scheduled_time: Optional[float] = 0
+    # enque_times: Optional[str] = None
+    # deque_times: Optional[str] = None
+    enque_times: Optional[List[float]] = None
+    deque_times: Optional[List[float]] = None
 
 
 class ResponseFormat(OpenAIBaseModel):

@@ -236,7 +236,7 @@ class SchedulerPrefillOutputs:
     to be recomputed from scratch.
     """
     # Selected sequences for prefill.
-    seq_groups: List[SequenceGroup]
+    seq_groups: List[ScheduledSequenceGroup]
     # Ignored sequence groups.
     ignored_seq_groups: List[SequenceGroup]
     num_lookahead_slots: int
@@ -893,6 +893,10 @@ class Scheduler:
         # Update swapped requests.
         self.swapped = remaining_swapped
         self.swapped.extend(running_scheduled.swapped_out)
+        
+        # Update time metrics
+        self._update_time_metrcis(prefills, running_scheduled, swapped_in)
+
         return SchedulerOutputs(
             scheduled_seq_groups=(prefills.seq_groups +
                                   running_scheduled.prefill_seq_groups +
@@ -928,6 +932,8 @@ class Scheduler:
         inter token latency because decodes requests don't need to blocked
         by prefill requests.
         """
+        total_seq_groups = len(self.waiting) + len(self.running) + len(self.swapped)
+
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
             max_num_seqs=self.scheduler_config.max_num_seqs,
@@ -993,6 +999,26 @@ class Scheduler:
         self.swapped = remaining_swapped
         self.swapped.extend(running_scheduled.swapped_out)
         self.swapped.extend(decode_preempted.swapped_out)
+        # update metrics
+        assert total_seq_groups == len(self.waiting) + len(self.running) + len(self.swapped)
+        # now = time.time()
+        # enque_seq_groups = [s.seq_group for s in (
+        #                    swapped_in.decode_seq_groups +
+        #                    swapped_in.prefill_seq_groups +
+        #                    prefills.seq_groups)]
+        # deque_seq_groups = (decode_preempted.preempted +
+        #                     decode_preempted.swapped_out +
+        #                     running_scheduled.preempted +
+        #                     running_scheduled.swapped_out)
+        # assert len(enque_seq_groups) == len(set(enque_seq_groups))
+        # assert len(deque_seq_groups) == len(set(deque_seq_groups))
+        # for s in enque_seq_groups:
+        #     s.metrics.every_enqueue_time.append(now - s.metrics.arrival_time)
+        # for s in deque_seq_groups:
+        #     s.metrics.every_deque_time.append(now - s.metrics.arrival_time)
+        self._update_time_metrcis(prefills, running_scheduled, 
+                                  swapped_in, decode_preempted)
+
         return SchedulerOutputs(
             scheduled_seq_groups=(prefills.seq_groups +
                                   running_scheduled.prefill_seq_groups +
@@ -1392,3 +1418,27 @@ class Scheduler:
             blocks_to_copy=blocks_to_copy,
             num_lookahead_slots=self._get_num_lookahead_slots(
                 is_prefill=False))
+
+    def _update_time_metrcis(
+        self, 
+        prefills: SchedulerPrefillOutputs, 
+        running_scheduled: SchedulerRunningOutputs, 
+        swapped_in: SchedulerSwappedInOutputs, 
+        decode_preempted: Optional[SchedulerRunningOutputs] = None
+    ) -> None:
+        now = time.time()
+        enque_seq_groups = [s.seq_group for s in (
+                           swapped_in.decode_seq_groups +
+                           swapped_in.prefill_seq_groups +
+                           prefills.seq_groups)]
+        deque_seq_groups = (running_scheduled.preempted +
+                            running_scheduled.swapped_out)
+        if decode_preempted:
+            deque_seq_groups += (decode_preempted.preempted +
+                                decode_preempted.swapped_out)
+        assert len(enque_seq_groups) == len(set(enque_seq_groups))
+        assert len(deque_seq_groups) == len(set(deque_seq_groups))
+        for s in enque_seq_groups:
+            s.metrics.every_enqueue_time.append(now - s.metrics.arrival_time)
+        for s in deque_seq_groups:
+            s.metrics.every_deque_time.append(now - s.metrics.arrival_time)

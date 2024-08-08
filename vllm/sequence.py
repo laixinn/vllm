@@ -97,6 +97,10 @@ class RequestMetrics:
     first_token_time: Optional[float]
     time_in_queue: Optional[float]
     finished_time: Optional[float] = None
+    # additional metrics
+    every_enqueue_time: List[float] = field(default_factory=list)
+    every_deque_time: List[float] = field(default_factory=list)
+    decode_index: int = 0
 
 
 class SequenceData:
