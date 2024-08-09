@@ -656,7 +656,7 @@ class SchedulerConfig:
         delay_factor: float = 0.0,
         enable_chunked_prefill: bool = False,
         embedding_mode: Optional[bool] = False,
-    ) -> None:
+        scheduler_priority: Optional[str] = "fcfs") -> None:
         if max_num_batched_tokens is not None:
             self.max_num_batched_tokens = max_num_batched_tokens
         else:
@@ -674,6 +674,7 @@ class SchedulerConfig:
                 self.max_num_batched_tokens = max(max_model_len, 2048)
         if enable_chunked_prefill:
             logger.info("Chunked prefill is enabled (EXPERIMENTAL).")
+        logger.info(f"We use {scheduler_priority} as scheduling policy.")
 
         self.max_num_seqs = max_num_seqs
         self.max_model_len = max_model_len
@@ -682,6 +683,8 @@ class SchedulerConfig:
         self.delay_factor = delay_factor
         self.chunked_prefill_enabled = enable_chunked_prefill
         self.embedding_mode = embedding_mode
+
+        self.scheduler_priority = scheduler_priority
 
         self._verify_args()
 

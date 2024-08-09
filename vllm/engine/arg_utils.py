@@ -82,6 +82,7 @@ class EngineArgs:
     image_feature_size: Optional[int] = None
     scheduler_delay_factor: float = 0.0
     enable_chunked_prefill: bool = False
+    scheduler_priority: Optional[str] = "fcfs"
 
     guided_decoding_backend: str = 'outlines'
     # Speculative decoding configuration.
@@ -476,6 +477,12 @@ class EngineArgs:
             action='store_true',
             help='If set, the prefill requests can be chunked based on the '
             'max_num_batched_tokens.')
+        parser.add_argument(
+            '--scheduler-priority',
+            type=str,
+            default=EngineArgs.scheduler_priority,
+            help='Priority of the scheduler. If not specified, '
+            'the FCFS priority is used.')
 
         parser.add_argument(
             '--speculative-model',
@@ -611,6 +618,7 @@ class EngineArgs:
             delay_factor=self.scheduler_delay_factor,
             enable_chunked_prefill=self.enable_chunked_prefill,
             embedding_mode=model_config.embedding_mode,
+            scheduler_priority=self.scheduler_priority,
         )
         lora_config = LoRAConfig(
             max_lora_rank=self.max_lora_rank,

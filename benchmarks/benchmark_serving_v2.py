@@ -243,6 +243,8 @@ def calculate_metrics(
         else:
             actual_output_lens.append(0)
 
+    draw_pipeline(outputs)
+
     metrics = BenchmarkMetrics(
         completed=completed,
         total_input=total_input,
@@ -277,6 +279,26 @@ def calculate_metrics(
     )
 
     return metrics, actual_output_lens
+
+def draw_pipeline(outputs: List[RequestFuncOutput]) -> None:
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+
+    fig, ax = plt.subplots(figsize=(10, 2))
+    
+    # Draw rectangles for each stage
+    for i, output in enumerate(outputs):
+        if output.success:
+            enque_time, deque_time = output.enque_times, output.deque_times
+            deque_time.append(enque_time[-1] + output.itl[-1])
+            for e, d in zip(enque_time, deque_time):
+                rect = mpatches.Rectangle((e, i), d-e, 1, edgecolor='black', facecolor='lightblue')
+                ax.add_patch(rect)
+        
+    ax.set_ylim(0, sum([output.success for output in outputs]) + 1)
+    ax.set_xlim(0, max([output.deque_times[-1] for output in outputs]) * 1.1)
+    plt.show()
+    plt.savefig('/root/vllm/benchmarks/pipeline.png')
 
 
 async def benchmark(

@@ -13,6 +13,7 @@ from vllm.config import (CacheConfig, DecodingConfig, DeviceConfig, LoadConfig,
                          VisionLanguageConfig)
 from vllm.core.scheduler import (ScheduledSequenceGroup, Scheduler,
                                  SchedulerOutputs)
+from vllm.core.scheduler_v2 import SchedulerV2
 from vllm.engine.arg_utils import EngineArgs
 from vllm.engine.metrics import StatLogger, Stats
 from vllm.engine.output_processor.interfaces import (
@@ -277,7 +278,10 @@ class LLMEngine:
         # Create the scheduler.
         # NOTE: the cache_config here have been updated with the numbers of
         # GPU and CPU blocks, which are profiled in the distributed executor.
-        self.scheduler = Scheduler(scheduler_config, cache_config, lora_config)
+        if scheduler_config.scheduler_priority == "fcfs":
+            self.scheduler = Scheduler(scheduler_config, cache_config, lora_config)
+        else:
+            self.scheduler = SchedulerV2(scheduler_config, cache_config, lora_config)
 
         # Metric Logging.
         if self.log_stats:

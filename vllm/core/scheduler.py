@@ -14,6 +14,7 @@ from vllm.lora.request import LoRARequest
 from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
                            SequenceGroupMetadata, SequenceStatus)
 from vllm.core.length_predictor import RandomLength
+from vllm.core.policy import PolicyFactory, Policy
 
 logger = init_logger(__name__)
 
@@ -309,8 +310,6 @@ class Scheduler:
 
         # track schedule gap
         self.last_schedule_time: float = 0.0
-        # length predictor
-        self.length_predictor = RandomLength()
 
     @property
     def lora_enabled(self) -> bool:
@@ -918,135 +917,10 @@ class Scheduler:
                        len(running_scheduled.swapped_out)),
         )
     
-    def _schedule_chunked_prefill_with_predicted_length(self):
-        """Schedule queued requests.
-        
-        Chunked prefill allows to chunk prefill requests, batch them together
-        with decode requests. This policy 1. schedule as many decoding requests
-        as possible. 2. schedule chunked prefill requests that are not
-        finished. 3. schedule swapped request. 4. schedule new prefill
-        requests.
-
-        The policy can sustain the high GPU utilization because it can put
-        prefill and decodes requests to the same batch, while it improves
-        inter token latency because decodes requests don't need to blocked
-        by prefill requests.
-        """
-        total_seq_groups = len(self.waiting) + len(self.running) + len(self.swapped)
-
-        budget = SchedulingBudget(
-            token_budget=self.scheduler_config.max_num_batched_tokens,
-            max_num_seqs=self.scheduler_config.max_num_seqs,
-        )
-        curr_loras: Set[int] = set()
-
-        remaining_waiting, prefills = (self.waiting,
-                                       SchedulerPrefillOutputs.create_empty())
-        remaining_running, running_scheduled = (
-            self.running, SchedulerRunningOutputs.create_empty())
-        remaining_swapped, swapped_in = (
-            self.swapped, SchedulerSwappedInOutputs.create_empty())
-
-        self.running, decode_preempted = self._update_running_decode(
-            self.running,
-            budget,
-            curr_loras,
-            enable_chunking=True)
-
-        # Decoding should be always scheduled first by fcfs.
-        # fcfs_policy = PolicyFactory.get_policy(policy_name="fcfs")
-        df_policy = PolicyFactory.get_policy(policy_name="df")
-        remaining_running, running_scheduled = self._schedule_running(
-            self.running,
-            budget,
-            curr_loras,
-            df_policy,
-            enable_chunking=True)
-
-        # Schedule swapped out requests.
-        # If preemption happens, it means we don't have space for swap-in.
-        if len(running_scheduled.preempted) + len(
-                running_scheduled.swapped_out) + len(
-                    decode_preempted.swapped_out) + len(
-                        decode_preempted.preempted) == 0:
-            remaining_swapped, swapped_in = self._schedule_swapped(
-                self.swapped, budget, curr_loras, df_policy)
-
-        # Schedule new prefills.
-        remaining_waiting, prefills = self._schedule_prefills(
-            self.waiting, budget, curr_loras, enable_chunking=True)
-
-        assert (budget.num_batched_tokens <=
-                self.scheduler_config.max_num_batched_tokens)
-        assert budget.num_curr_seqs <= self.scheduler_config.max_num_seqs
-
-        # Update waiting requests.
-        self.waiting = remaining_waiting
-        self.waiting.extendleft(running_scheduled.preempted)
-        self.waiting.extendleft(decode_preempted.preempted)
-        # Update new running requests.
-        self.running = remaining_running
-        self.running.extend([s.seq_group for s in prefills.seq_groups])
-        self.running.extend(
-            [s.seq_group for s in running_scheduled.decode_seq_groups])
-        self.running.extend(
-            [s.seq_group for s in running_scheduled.prefill_seq_groups])
-        self.running.extend(
-            [s.seq_group for s in swapped_in.decode_seq_groups])
-        self.running.extend(
-            [s.seq_group for s in swapped_in.prefill_seq_groups])
-        # Update swapped requests.
-        self.swapped = remaining_swapped
-        self.swapped.extend(running_scheduled.swapped_out)
-        self.swapped.extend(decode_preempted.swapped_out)
-        # update metrics
-        assert total_seq_groups == len(self.waiting) + len(self.running) + len(self.swapped)
-        # now = time.time()
-        # enque_seq_groups = [s.seq_group for s in (
-        #                    swapped_in.decode_seq_groups +
-        #                    swapped_in.prefill_seq_groups +
-        #                    prefills.seq_groups)]
-        # deque_seq_groups = (decode_preempted.preempted +
-        #                     decode_preempted.swapped_out +
-        #                     running_scheduled.preempted +
-        #                     running_scheduled.swapped_out)
-        # assert len(enque_seq_groups) == len(set(enque_seq_groups))
-        # assert len(deque_seq_groups) == len(set(deque_seq_groups))
-        # for s in enque_seq_groups:
-        #     s.metrics.every_enqueue_time.append(now - s.metrics.arrival_time)
-        # for s in deque_seq_groups:
-        #     s.metrics.every_deque_time.append(now - s.metrics.arrival_time)
-        self._update_time_metrcis(prefills, running_scheduled, 
-                                  swapped_in, decode_preempted)
-
-        return SchedulerOutputs(
-            scheduled_seq_groups=(prefills.seq_groups +
-                                  running_scheduled.prefill_seq_groups +
-                                  swapped_in.prefill_seq_groups +
-                                  running_scheduled.decode_seq_groups +
-                                  swapped_in.decode_seq_groups),
-            num_prefill_groups=(len(prefills.seq_groups) +
-                                len(swapped_in.prefill_seq_groups) +
-                                len(running_scheduled.prefill_seq_groups)),
-            num_batched_tokens=budget.num_batched_tokens,
-            blocks_to_swap_in=swapped_in.blocks_to_swap_in,
-            blocks_to_swap_out=running_scheduled.blocks_to_swap_out + 
-                               decode_preempted.blocks_to_swap_out,
-            blocks_to_copy=running_scheduled.blocks_to_copy +
-                           swapped_in.blocks_to_copy,
-            ignored_seq_groups=prefills.ignored_seq_groups,
-            num_lookahead_slots=running_scheduled.num_lookahead_slots,
-            running_queue_size=len(self.running),
-            preempted=(len(running_scheduled.preempted) +
-                       len(running_scheduled.swapped_out) + 
-                       len(decode_preempted.preempted)),
-        )
-    
     def _schedule(self) -> SchedulerOutputs:
         """Schedule queued requests."""
         if self.scheduler_config.chunked_prefill_enabled:
-            # return self._schedule_chunked_prefill()
-            return self._schedule_chunked_prefill_with_predicted_length()
+            return self._schedule_chunked_prefill()
         else:
             return self._schedule_default()
 
@@ -1331,13 +1205,6 @@ class Scheduler:
             num_new_tokens = min(num_new_tokens,
                                  budget.remaining_token_budget())
         return num_new_tokens
-    
-    def _predict_length(self, scheduled_seq_groups: List[ScheduledSequenceGroup]) -> List[ScheduledSequenceGroup]:
-        list_seq_group = [sch_seq_group.seq_group for sch_seq_group in scheduled_seq_groups]
-        list_seq_group = self.length_predictor.predict(list_seq_group)
-        for updated_seq_group, sch_seq_group in zip(list_seq_group, scheduled_seq_groups):
-            sch_seq_group.seq_group = updated_seq_group
-        return scheduled_seq_groups
 
     def _update_running_decode(
         self,
