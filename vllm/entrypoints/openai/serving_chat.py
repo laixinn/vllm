@@ -466,7 +466,7 @@ class OpenAIServingChat(OpenAIServing):
                             step_top_logprobs, num_output_top_logprobs)))
 
         return ChatCompletionLogProbs(content=logprobs_content)
-
+    
 class OpenAIServingChatV2(OpenAIServing):
 
     def __init__(self,
@@ -756,7 +756,7 @@ class OpenAIServingChatV2(OpenAIServing):
                             enque_times=res.metrics.every_enqueue_time,
                             deque_times=res.metrics.every_deque_time,
                         )
-                        
+
                         choice_data = ChatCompletionResponseStreamChoice(
                             index=i,
                             delta=DeltaMessage(content=delta_text),

@@ -35,19 +35,20 @@ class FCFS(Policy):
     ) -> float:
         return now - seq_group.metrics.arrival_time
     
+    
 class DecodeFirst(Policy):
     
-    def get_priority(
-        self,
-        now: float,
-        seq_group: SequenceGroup,
-    ) -> float:
-        wait_time = now - seq_group.metrics.arrival_time
-        int_len = len(str(wait_time).split('.')[0])
-        is_decode = int(seq_group.remaining_decode > 0)
-        sort_score = wait_time/10**int_len + is_decode
-        return sort_score
-        
+        def get_priority(
+            self,
+            now: float,
+            seq_group: SequenceGroup,
+        ) -> float:
+            wait_time = now - seq_group.metrics.arrival_time
+            int_len = len(str(wait_time).split('.')[0])
+            is_decode = int(seq_group.remaining_decode > 0)
+            sort_score = wait_time/10**int_len + is_decode
+            return sort_score
+
 class PolicyFactory:
 
     _POLICY_REGISTRY = {'fcfs': FCFS, 'df': DecodeFirst}
