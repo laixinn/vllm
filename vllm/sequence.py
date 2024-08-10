@@ -465,6 +465,7 @@ class SequenceGroup:
         self.encoder_seq = encoder_seq
 
         self.remaining_decode = 0
+        self.just_end = 0
 
     @property
     def prompt(self) -> Optional[str]:

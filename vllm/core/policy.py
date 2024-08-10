@@ -1,5 +1,5 @@
 from collections import deque
-from typing import Deque
+from typing import Deque, Optional
 
 from vllm.sequence import SequenceGroup
 
@@ -36,22 +36,27 @@ class FCFS(Policy):
         return now - seq_group.metrics.arrival_time
     
     
-class DecodeFirst(Policy):
+class StrictDecodeFirst(Policy):
+    def __init__(self, max_length=30) -> None:
+        self.max_length = max_length
     
-        def get_priority(
-            self,
-            now: float,
-            seq_group: SequenceGroup,
-        ) -> float:
-            wait_time = now - seq_group.metrics.arrival_time
-            int_len = len(str(wait_time).split('.')[0])
-            is_decode = int(seq_group.remaining_decode > 0)
-            sort_score = wait_time/10**int_len + is_decode
-            return sort_score
+    def get_priority(
+        self,
+        now: float,
+        seq_group: SequenceGroup,
+    ) -> float:
+        wait_time = now - seq_group.metrics.arrival_time
+        int_len = len(str(wait_time).split('.')[0])
+        is_decode = int(seq_group.remaining_decode > 0)
+        short_priority = max(1, self.max_length - seq_group.remaining_decode)
+        sort_score = wait_time/10**int_len + short_priority * is_decode
+        if hasattr(seq_group, 'just_end'):
+            sort_score *= int(not seq_group.just_end)
+        return sort_score
 
 class PolicyFactory:
 
-    _POLICY_REGISTRY = {'fcfs': FCFS, 'df': DecodeFirst}
+    _POLICY_REGISTRY = {'fcfs': FCFS, 'sdf': StrictDecodeFirst}
 
     @classmethod
     def get_policy(cls, policy_name: str, **kwargs) -> Policy:

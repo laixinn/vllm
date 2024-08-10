@@ -243,8 +243,6 @@ def calculate_metrics(
         else:
             actual_output_lens.append(0)
 
-    draw_pipeline(outputs)
-
     metrics = BenchmarkMetrics(
         completed=completed,
         total_input=total_input,
@@ -296,7 +294,7 @@ def draw_pipeline(outputs: List[RequestFuncOutput]) -> None:
                 ax.add_patch(rect)
         
     ax.set_ylim(0, sum([output.success for output in outputs]) + 1)
-    ax.set_xlim(0, max([output.deque_times[-1] for output in outputs]) * 1.1)
+    ax.set_xlim(0, max([output.deque_times[-1] for output in outputs if output.success]) * 1.1)
     plt.show()
     plt.savefig('/root/vllm/benchmarks/pipeline.png')
 
@@ -359,6 +357,15 @@ async def benchmark(
         tokenizer=tokenizer,
         warming_num=warming_num,
     )
+
+    draw_pipeline(outputs)
+
+    error_set = set()
+    for output in outputs:
+        if not output.success:
+            error_set.add(output.error)
+    if error_set:
+        print(error_set)
 
     print("{s:{c}^{n}}".format(s=' Serving Benchmark Result ', n=50, c='='))
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
