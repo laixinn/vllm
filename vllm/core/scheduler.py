@@ -1205,87 +1205,7 @@ class Scheduler:
             num_new_tokens = min(num_new_tokens,
                                  budget.remaining_token_budget())
         return num_new_tokens
-
-    def _update_running_decode(
-        self,
-        running_queue: deque,
-        budget: SchedulingBudget,
-        curr_loras: Optional[Set[int]],
-        enable_chunking: bool = False,
-    ) -> Tuple[deque, SchedulerRunningOutputs]:
-        '''
-        preempt all running seq_group
-        '''
-        # Blocks that need to be swapped or copied before model execution.
-        blocks_to_swap_out: List[Tuple[int, int]] = []
-        blocks_to_copy: List[Tuple[int, int]] = []
-
-        decode_seq_groups: List[ScheduledSequenceGroup] = []
-        prefill_seq_groups: List[ScheduledSequenceGroup] = []
-        preempted: List[SequenceGroup] = []
-        swapped_out: List[SequenceGroup] = []
-        remaining_running: Deque[Sequence] = deque()
-
-        while running_queue:
-            seq_group = running_queue[0]
-            #     # =1: finish current decoding, swap out
-            #     # >1: current decoding
-            #     # =0 and is_prefill=1: prefilling
-            #     # =0 and is_prefill=0: decoding first token
-            if seq_group.remaining_decode == 1:
-                seq_group.remaining_decode = 0
-            else:
-                if seq_group.remaining_decode > 1:
-                    seq_group.remaining_decode -= 1
-                elif seq_group.is_prefill() and seq_group.remaining_decode == 0:
-                    assert seq_group.remaining_decode == 0
-                elif not seq_group.is_prefill() and seq_group.remaining_decode == 0:
-                    self.length_predictor.predict_one(seq_group)
-                    assert seq_group.remaining_decode >= 1
-                else:
-                    assert False, "remaining_decode out of expected cases"
-                
-                remaining_running.append(seq_group)
-                running_queue.popleft()
-                continue
-
-            num_running_tokens = self._get_num_new_tokens(
-                seq_group, SequenceStatus.RUNNING, enable_chunking, budget)
-
-            if num_running_tokens == 0:
-                break
-
-            running_queue.popleft()
-
-            budget.subtract_num_batched_tokens(seq_group.request_id,
-                                                num_running_tokens)
-            num_running_seqs = seq_group.get_max_num_running_seqs()
-            budget.subtract_num_seqs(seq_group.request_id,
-                                        num_running_seqs)
-            if curr_loras is not None and seq_group.lora_int_id > 0:
-                curr_loras.remove(seq_group.lora_int_id)
-                
-            # No other sequence groups can be preempted.
-            # Preempt the current sequence group.
-            # NOTE: use SWAP because RECOMPUTE loses remaining decode
-            # but remaining_decode=0, so finally use RECOMPUTE
-            preempted_mode = self._preempt(seq_group,
-                                            blocks_to_swap_out)
-            if preempted_mode == PreemptionMode.RECOMPUTE:
-                preempted.append(seq_group)
-            else:
-                swapped_out.append(seq_group)
-
-        return remaining_running, SchedulerRunningOutputs(
-            decode_seq_groups=decode_seq_groups,
-            prefill_seq_groups=prefill_seq_groups,
-            preempted=preempted,
-            swapped_out=swapped_out,
-            blocks_to_swap_out=blocks_to_swap_out,
-            blocks_to_copy=blocks_to_copy,
-            num_lookahead_slots=self._get_num_lookahead_slots(
-                is_prefill=False))
-
+    
     def _update_time_metrcis(
         self, 
         prefills: SchedulerPrefillOutputs, 
@@ -1309,3 +1229,6 @@ class Scheduler:
             s.metrics.every_enqueue_time.append(now - s.metrics.arrival_time)
         for s in deque_seq_groups:
             s.metrics.every_deque_time.append(now - s.metrics.arrival_time)
+
+    def get_num_running_requests(self) -> int:
+        return len(self.running) + len(self.waiting) + len(self.swapped)

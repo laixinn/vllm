@@ -5,6 +5,7 @@ import re
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 from typing import Optional, Set
+import json
 
 import fastapi
 import uvicorn
@@ -83,6 +84,12 @@ async def health() -> Response:
     """Health check."""
     await openai_serving_chat.engine.check_health()
     return Response(status_code=200)
+
+
+@app.get("/states")
+async def states() -> Response:
+    stats = engine.engine._get_stats()
+    return JSONResponse(content=json.dumps(stats.__dict__))
 
 
 @app.get("/v1/models")

@@ -37,7 +37,6 @@ from transformers import PreTrainedTokenizerBase
 
 from vllm.transformers_utils.tokenizer import get_tokenizer
 
-
 @dataclass
 class BenchmarkMetrics:
     completed: int
@@ -208,6 +207,7 @@ def calculate_metrics(
     dur_s: float,
     tokenizer: PreTrainedTokenizerBase,
     warming_num: Optional[int] = 0,
+    end_num: Optional[int] = 0,
 ) -> Tuple[BenchmarkMetrics, List[int]]:
     actual_output_lens = []
     total_input = 0
@@ -219,7 +219,9 @@ def calculate_metrics(
     # tfss = [] # time-for-serve    
     scs = [] # stall count
     rts = [] # response time
-    for i in range(warming_num, len(outputs)):
+    if end_num == 0:
+        end_num = len(outputs)
+    for i in range(warming_num, end_num):
         if outputs[i].success:
             output_len = len(tokenizer(outputs[i].generated_text).input_ids)
             actual_output_lens.append(output_len)
@@ -278,25 +280,62 @@ def calculate_metrics(
 
     return metrics, actual_output_lens
 
-def draw_pipeline(outputs: List[RequestFuncOutput]) -> None:
+def draw_decoding(outputs: List[RequestFuncOutput], benchmark_start_time: float) -> None:
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
 
     fig, ax = plt.subplots(figsize=(10, 2))
     
     # Draw rectangles for each stage
+    maxy = 0
     for i, output in enumerate(outputs):
         if output.success:
-            enque_time, deque_time = output.enque_times, output.deque_times
-            deque_time.append(enque_time[-1] + output.itl[-1])
+            start_time = output.st - benchmark_start_time
+            e = start_time
+
+            rect = mpatches.Rectangle((e, i), output.ttft, 1, edgecolor='black', facecolor='lightgray')
+            e += output.ttft
+
+            for itl, c in zip(output.itl, output.token_cnt):
+                rect = mpatches.Rectangle((e, i), itl, 1, edgecolor='black', facecolor='lightblue')
+                ax.text(e + itl / 2, i + 0.5, f"{c}", ha='center', va='center', color='black')
+                ax.add_patch(rect)
+                e += itl
+                
+            # rect = mpatches.Rectangle((e, i), output.latency-e, 1, edgecolor='black', facecolor='lightblue')
+            # ax.add_patch(rect)
+            maxy = max(maxy, e)
+    ax.set_ylim(0, sum([output.success for output in outputs]) + 1)
+    # ax.set_xlim(0, max([output.latency+start_time for output in outputs if output.success]) * 1.1)
+    ax.set_xlim(0, maxy * 1.1)
+    plt.savefig('/root/vllm/benchmarks/decoding-pipeline.png')
+    plt.close()
+
+def draw_pipeline(outputs: List[RequestFuncOutput], benchmark_start_time: float) -> None:
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+
+    fig, ax = plt.subplots(figsize=(10, 2))
+    
+    # Draw rectangles for each stage
+    maxy = 0
+    for i, output in enumerate(outputs):
+        if output.success:
+            enque_time = output.enque_times
+            deque_time = output.deque_times + [sum(output.itl)]
+            # # wait for scheduling
+            # rect0 = mpatches.Rectangle((start_time, i), enque_time[0], 1, edgecolor='black', facecolor='lightgray')
+            # ax.add_patch(rect0)
             for e, d in zip(enque_time, deque_time):
                 rect = mpatches.Rectangle((e, i), d-e, 1, edgecolor='black', facecolor='lightblue')
+                # ax.text(e + (d - e) / 2, i + 0.5, f"{output.token_cnt}", ha='center', va='center', color='black')
                 ax.add_patch(rect)
-        
+            maxy = max(maxy, deque_time[-1])
     ax.set_ylim(0, sum([output.success for output in outputs]) + 1)
-    ax.set_xlim(0, max([output.deque_times[-1] for output in outputs if output.success]) * 1.1)
-    plt.show()
+    ax.set_xlim(0, maxy * 1.1)
     plt.savefig('/root/vllm/benchmarks/pipeline.png')
+    plt.close()
+
 
 
 async def benchmark(
@@ -350,15 +389,18 @@ async def benchmark(
 
     benchmark_duration = time.perf_counter() - benchmark_start_time
 
+    total_num = len(outputs)
     metrics, actual_output_lens = calculate_metrics(
         input_requests=input_requests,
         outputs=outputs,
         dur_s=benchmark_duration,
         tokenizer=tokenizer,
-        warming_num=warming_num,
+        # warming_num=0,
+        # end_num=int(total_num*0.9),
     )
 
-    draw_pipeline(outputs)
+    draw_pipeline(outputs, benchmark_start_time)
+    draw_decoding(outputs, benchmark_start_time)
 
     error_set = set()
     for output in outputs:

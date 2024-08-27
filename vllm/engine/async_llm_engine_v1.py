@@ -3,7 +3,7 @@ import time
 from functools import partial
 from typing import (AsyncIterator, Callable, Dict, Iterable, List, Optional,
                     Set, Tuple, Type, Union)
-from collections import deque, OrderedDict
+from collections import deque
 
 from transformers import PreTrainedTokenizer
 
@@ -33,7 +33,7 @@ from vllm.outputs import RequestOutputFactory
 logger = init_logger(__name__)
 ENGINE_ITERATION_TIMEOUT_S = envs.VLLM_ENGINE_ITERATION_TIMEOUT_S
 REQUEST_LOOP_DELAY = 0.01
-STEP_LOOP_DELAY = 0.4
+STEP_LOOP_DELAY = 0.01
 
 class AsyncEngineDeadError(RuntimeError):
     pass
@@ -206,71 +206,6 @@ class RequestTracker:
     def has_new_requests(self):
         return not self._new_requests.empty()
 
-class LocalStream:
-    def __init__(self) -> None:
-        self._stream_dict: Dict[str, List[RequestOutput]] = {}
-        self.longgest_output: OrderedDict[str, int] = OrderedDict()
-        self.MAX_VALUE = 1e5
-        self.lock = Lock()
-
-    def append_request(self, request_outputs: List[RequestOutput]) -> None:
-        if len(request_outputs) == 0:
-            return
-        
-        self.lock.acquire()
-        for request_output in request_outputs:
-            request_id = request_output.request_id
-            if request_output.finished:
-                output_size = self.MAX_VALUE
-            else:
-                output_size = len(request_output.outputs[0].token_ids)
-
-            if request_id not in self._stream_dict:
-                self._stream_dict[request_id] = [request_output]
-                self.longgest_output[request_id] = output_size
-            else:
-                self._stream_dict[request_id].append(request_output)
-                self.longgest_output[request_id] += output_size
-
-        self.longgest_output = OrderedDict(sorted(self.longgest_output.items(),
-                                                  key=lambda x:x[1]))
-        self.lock.release()
-
-    def get_long_outputs(self, k: Optional[int] = 100) -> Dict[str, List[RequestOutput]]:
-        self.lock.acquire()
-        orderlist = list(self.longgest_output.items())
-        idx = -1
-        for i in range(len(orderlist)):
-            if orderlist[i][1] < self.MAX_VALUE:
-                idx = i-1
-                break
-        k = max(k, idx)
-        assert k >= 0
-        ret =  {id: self._stream_dict[id] for id, _ in orderlist[:k]}
-        self._stream_dict = {id: self._stream_dict[id] for id, _ in orderlist[k:]}
-        self.longgest_output = OrderedDict(sorted(orderlist[k:], key=lambda x:x[1]))
-        self._stream_dict
-        self.lock.release()
-        return ret
-    
-    def empty(self) -> bool:
-        return len(self._stream_dict) == 0
-
-class LocalStreamV1:
-    def __init__(self) -> None:
-        self.stream_output = Queue()
-
-    def append_request(self, request_outputs: List[RequestOutput]) -> None:
-        if len(request_outputs) == 0:
-            return
-        
-        self.stream_output.put_nowait(request_outputs)
-
-    def get_long_outputs(self) -> List[RequestOutput]:
-        return self.stream_output.get()
-    
-    def empty(self) -> bool:
-        return self.stream_output.empty()
 
 class _AsyncLLMEngine(LLMEngine):
     """Extension of LLMEngine to add async methods."""
@@ -323,6 +258,15 @@ class _AsyncLLMEngine(LLMEngine):
             scheduler_outputs.ignored_seq_groups, seq_group_metadata_list)
         t3 = time.time()
         self.output_consumption.append(t3 - t2)
+
+        # # Log average consumption
+        # logger.info(f"Avg schedule time: {sum(self.schedule_consumption) / len(self.schedule_consumption)};" + 
+        #             f" Avg forward time: {sum(self.forward_consumption) / len(self.forward_consumption)};" + 
+        #             f" Avg output time: {sum(self.output_consumption) / len(self.output_consumption)}")
+
+        # for res_output in request_outputs:
+        #     logger.info(f"Request {res_output.request_id} is scheduled, new text:" +
+        #                 ";".join([output.text for output in res_output.outputs]))
 
         # Log stats.
         self.do_log_stats(scheduler_outputs, output)
@@ -505,7 +449,7 @@ class _AsyncPipelineLLMEngineV1(_AsyncLLMEngine):
         self.pipeline_consumption.append(t1 - t0)
         return self.stream_output.popleft()
     
-class _AsyncPipelineLLMEngineV2(_AsyncLLMEngine):
+class _AsyncPipelineLLMEngine(_AsyncLLMEngine):
     """Extension of LLMEngine for lazy scheduler."""
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -710,175 +654,6 @@ class _AsyncPipelineLLMEngineV2(_AsyncLLMEngine):
         # self.pipeline_consumption.append(t1 - t0)
         return output
 
-class _AsyncPipelineLLMEngineV3(_AsyncLLMEngine):
-    """Extension of LLMEngine for lazy scheduler."""
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        # pipeline
-        self.schedule_event = Event()
-        self.schedule_thread = Thread(target=self._schedule_thread, daemon=True)
-
-        self.SCHEDULER_LOOP_DELAY = 0.01
-        # self.schedule_timer_thread = Thread(target=self._scheduler_timer_loop, daemon=True)
-
-        self.forward_event = Event()
-        self.forward_thread = Thread(target=self._forward_thread, daemon=True)
-        self.forward_output = Queue()
-
-        self.stream_output = Queue()
-
-    def init_threads(self) ->None:
-        self.schedule_thread.start()
-        self.forward_thread.start()
-        # self.schedule_timer_thread.start()
-    
-    def _scheduler_timer_loop(self) -> None:
-        while True:
-            time.sleep(self.SCHEDULER_LOOP_DELAY)
-            num_request = self.scheduler.get_num_running_requests()
-            if num_request > 0:
-                # logger.info(f"We have {num_request} requests")
-                self.schedule_event.set()
-
-    def _schedule_thread(self):
-        last_run = None
-        while True:
-            time.sleep(self.SCHEDULER_LOOP_DELAY)
-            num_request = self.scheduler.get_num_running_requests()
-            if num_request == 0:
-                continue
-
-            t0 = time.time()
-            # self.schedule_event.wait()
-            # self.schedule_event.clear()
-
-            t1 = time.time()
-            self.pipeline_schedule_loss.append(t1 - t0)
-
-            # t0 = time.time()
-            # seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
-            # logger.info("Scheduler is scheduling")
-            scheduling_time = self.scheduler.lazy_schedule()
-            self.schedule_consumption.append(scheduling_time)
-            
-            # t1 = time.time()
-            # if last_run is None:
-            #     last_run = t1
-            # else:
-            #     self.pipeline_schedule_loss.append(t1 - last_run - scheduling_time)
-            #     last_run = t1
-
-            # self.schedule_output.append([seq_group_metadata_list, scheduler_outputs])
-            # self.forward_event.set()
-    
-    def _forward_thread(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        last_run = None
-        try:
-            while True:
-                t0 = time.time()
-                # self.forward_event.wait()
-                # self.forward_event.clear()
-
-                # t1 = time.time()
-                # self.pipeline_event_loss.append(t1-t0)
-                # assert len(self.schedule_output) > 0
-                # seq_group_metadata_list, scheduler_outputs = self.schedule_output.popleft()
-
-                seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
-                # logger.info("Got scheduler exectuor result.")
-                self.schedule_cache_consumption.append(self.scheduler.cache_consumption)
-                logger.info("Forward is running")
-
-                t1 = time.time()
-                self.pipeline_event_loss.append(t1 - t0 - self.scheduler.cache_consumption)
-
-                if not scheduler_outputs.is_empty():
-                    # Execute the model.
-                    execute_model_req = ExecuteModelRequest(
-                        seq_group_metadata_list=seq_group_metadata_list,
-                        blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-                        blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-                        blocks_to_copy=scheduler_outputs.blocks_to_copy,
-                        num_lookahead_slots=scheduler_outputs.num_lookahead_slots,
-                        running_queue_size=scheduler_outputs.running_queue_size,
-                    )
-
-                    future = loop.create_task(self.model_executor.execute_model_async(execute_model_req))
-                    loop.run_until_complete(future)
-                    output = future.result()
-
-                    # output = self.model_executor.execute_model(execute_model_req)
-
-                    # logger.info("Got model result.")
-                    # output = await self.model_executor.execute_model_async(execute_model_req)
-
-                else:
-                    output = []
-                    logger.warning("Put empty output into forward output.")
-                t2 = time.time()
-                self.forward_consumption.append(t2 - t1 + self.scheduler.cache_consumption)
-
-                if last_run is None:
-                    last_run = t2
-                else:
-                    self.pipeline_loss.append(t2 - last_run - (t2-t1) - self.scheduler.cache_consumption)
-                    last_run = t2
-
-                # self.forward_output.put([output, seq_group_metadata_list, scheduler_outputs])
-
-                if len(output) == 0:
-                    logger.warning("Got emtpy forward output.")
-                    # self.scheduler.sync_running()
-                    continue
-                logger.info("Streaming is running")
-
-                t2 = time.time()
-                free_gpu = self.scheduler.block_manager.gpu_allocator.get_num_free_blocks()
-                request_outputs = self._process_model_outputs(
-                    output, scheduler_outputs.scheduled_seq_groups,
-                    scheduler_outputs.ignored_seq_groups, seq_group_metadata_list)
-                free_gpu2 = self.scheduler.block_manager.gpu_allocator.get_num_free_blocks()
-                if free_gpu2 > free_gpu:
-                    self.scheduler.atomic.acquire()
-                    logger.info(f"Free GPU: {free_gpu} -> {free_gpu2}")
-                    self.scheduler.free_gpu_blocks += (free_gpu2 - free_gpu)
-                    self.scheduler.atomic.release()
-                # logger.info("Normal streaming put one token")
-                self.scheduler.check_sync()
-                t3 = time.time()
-                self.output_consumption.append(t3 - t2)
-
-                # Log stats.
-                self.do_log_stats(scheduler_outputs, output)
-
-                if not request_outputs:
-                    # Stop the execute model loop in parallel workers until there are
-                    # more requests to process. This avoids waiting indefinitely in
-                    # torch.distributed ops which may otherwise timeout, and unblocks
-                    # the RPC thread in the workers so that they can process any other
-                    # queued control plane messages, such as add/remove lora adapters.
-                    asyncio.run(self.model_executor.stop_remote_worker_execution_loop_async())
-                    # await self.model_executor.stop_remote_worker_execution_loop_async()
-
-                # self.stream_output.append(request_outputs)
-                # self.has_stream_output.set()
-                self.stream_output.put(request_outputs)
-        finally:
-            loop.close()
-
-    def step(
-        self
-    ) -> List[Union[RequestOutput, EmbeddingRequestOutput]]:
-        try:
-            # output = self.stream_output.get_nowait()
-            output = self.stream_output.get(timeout=0.4)
-        except Exception as e:
-            logger.warning("step timeout")
-            output = []
-        return output
-
 class AsyncLLMEngine:
     """An asynchronous wrapper for :class:`LLMEngine`.
 
@@ -934,8 +709,6 @@ class AsyncLLMEngine:
 
         self.last_time = None
 
-        self.local_stream = None
-
     @classmethod
     def from_engine_args(
         cls,
@@ -971,15 +744,7 @@ class AsyncLLMEngine:
 
         '''lazy scheduler needs pipeline engine'''
         if engine_config.scheduler_config.scheduler_priority == 'lazy':
-            # if engine_config.parallel_config.tensor_parallel_size > 1:
-            #     cls._engine_class = _AsyncPipelineLLMEngineV3
-            # else:
-            #     cls._engine_class = _AsyncPipelineLLMEngineV2
-            cls._engine_class = _AsyncPipelineLLMEngineV3
-            cls.is_pipeline = True
-        else:
-            cls._engine_class = _AsyncLLMEngine
-            cls.is_pipeline = False
+            cls._engine_class = _AsyncPipelineLLMEngine
 
         # Create the async LLM engine.
         engine = cls(
@@ -1034,24 +799,20 @@ class AsyncLLMEngine:
         # Initialize the RequestTracker here so it uses the right event loop.
         self._request_tracker = RequestTracker()
 
-        # if self._engine_class == _AsyncPipelineLLMEngine:
-        if self.is_pipeline:
+        if self._engine_class == _AsyncPipelineLLMEngine:
             self.engine.init_threads()
-            # self.is_pipeline = True
-            # self.step_thread = Thread(target=self.engine_step_thread, daemon=True)
-            # self.step_thread.start()
-            # self._background_loop_unshielded = asyncio.get_event_loop(
-            # ).create_task(self.engine_request_thread())
-
+            self.is_pipeline = True
+            self.step_thread = Thread(target=self.engine_step_thread, daemon=True)
+            self.step_thread.start()
             self._background_loop_unshielded = asyncio.get_event_loop(
-            ).create_task(self.run_engine_loop())
+            ).create_task(self.engine_request_thread())
+
+            # self._background_loop_unshielded = asyncio.get_event_loop(
+            # ).create_task(self.run_engine_loop())
 
             logger.info("Pipeline engine started.")
         else:
-            self.local_stream = LocalStreamV1()
-            self.stream_thread = Thread(target=self.engine_async_stream_thread_v1, daemon=True)
-            self.stream_thread.start()
-
+            self.is_pipeline = False
             self._background_loop_unshielded = asyncio.get_event_loop(
             ).create_task(self.run_engine_loop())
 
@@ -1120,12 +881,9 @@ class AsyncLLMEngine:
 
         # logger.info(f"Got one stream output with size {len(request_outputs)}.")
         # Put the outputs into the corresponding streams.
-        if self.local_stream is None:
-            for request_output in request_outputs:
-                self._request_tracker.process_request_output(
-                    request_output, verbose=self.log_requests)#verbose=True)#
-        else:
-            self.local_stream.append_request(request_outputs)
+        for request_output in request_outputs:
+            self._request_tracker.process_request_output(
+                request_output, verbose=self.log_requests)#verbose=True)#
         
         cur_time = time.time()
         if self.last_time is None:
@@ -1211,41 +969,6 @@ class AsyncLLMEngine:
 
             time.sleep(STEP_LOOP_DELAY)
 
-    def engine_async_stream_thread(self):
-        while True:
-            if not self.local_stream.empty():
-                # logger.info(f"Starting engine step with {self.engine.scheduler.get_num_running_requests()} requests")
-                outputs = self.local_stream.get_long_outputs()
-                for _, request_outputs in outputs.items():
-                    for request_output in request_outputs:
-                        self._request_tracker.process_request_output(request_output)
-                    
-                cur_time = time.time()
-                if self.last_time is None:
-                    self.last_time = cur_time
-                else:
-                    self.engine.pipeline_consumption.append(cur_time - self.last_time)
-                    self.last_time = cur_time
-
-            time.sleep(STEP_LOOP_DELAY)
-
-    def engine_async_stream_thread_v1(self):
-        while True:
-            if not self.local_stream.empty():
-                # logger.info(f"Starting engine step with {self.engine.scheduler.get_num_running_requests()} requests")
-                request_outputs = self.local_stream.get_long_outputs()
-                for request_output in request_outputs:
-                    self._request_tracker.process_request_output(request_output)
-                    
-                cur_time = time.time()
-                if self.last_time is None:
-                    self.last_time = cur_time
-                else:
-                    self.engine.pipeline_consumption.append(cur_time - self.last_time)
-                    self.last_time = cur_time
-            else:
-                time.sleep(STEP_LOOP_DELAY)
-
     async def run_engine_loop(self):
         has_requests_in_progress = False
         while True:
@@ -1257,24 +980,20 @@ class AsyncLLMEngine:
                     not self.engine.stream_output.empty()
                 )
             if not has_requests_in_progress and not has_unfinished_requests:
-                logger.info("Waiting for new requests...")
+                logger.debug("Waiting for new requests...")
                 self.last_time = None
                 await self._request_tracker.wait_for_new_requests()
-                logger.info("Got new requests!")
+                logger.debug("Got new requests!")
 
             # Abort if iteration takes too long due to unrecoverable errors
             # (eg. NCCL timeouts).
-            # try:
-            #     # logger.info(f"Starting engine step with {len(self._request_tracker._request_streams)} requests")
-            #     has_requests_in_progress = await asyncio.wait_for(
-            #         self.engine_step(), ENGINE_ITERATION_TIMEOUT_S)
-                
-            #     logger.debug("Finished engine step.")
-            # except Exception as exc:
-            #     logger.warning("engine step time out.")
-            
-            has_requests_in_progress = await self.engine_step()
-
+            try:
+                # logger.info(f"Starting engine step with {len(self._request_tracker._request_streams)} requests")
+                has_requests_in_progress = await asyncio.wait_for(
+                    self.engine_step(), ENGINE_ITERATION_TIMEOUT_S)
+                logger.debug("Finished engine step.")
+            except Exception as exc:
+                logger.warning("engine step time out.")
             # except asyncio.TimeoutError as exc:
             #     # logger.error(
             #     #     "Engine iteration timed out. This should never happen!")

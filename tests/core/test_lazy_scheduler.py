@@ -1,16 +1,19 @@
 from typing import List
 from unittest.mock import MagicMock
+import copy
 
 import pytest  # noqa
 
 from vllm.config import CacheConfig, SchedulerConfig
 from vllm.core.interfaces import AllocStatus
 # from vllm.core.scheduler import Scheduler
-from vllm.core.scheduler_v2 import SchedulerV2 as Scheduler 
-from vllm.sequence import Logprob, SequenceGroup
+from vllm.core.scheduler_v2 import LazyScheduler as Scheduler
+from vllm.core.scheduler_v2 import LazyStates
+from vllm.sequence import Logprob, SequenceGroup, SequenceStatus
 
 from .utils import create_dummy_prompt
 
+from vllm.core.scheduler_v2 import LazySequenceGroup
 
 def get_sequence_groups(scheduler_output):
     return [s.seq_group for s in scheduler_output.scheduled_seq_groups]
@@ -22,11 +25,34 @@ def append_new_token(seq_group, token_id: int):
 
 
 def schedule_and_update_computed_tokens(scheduler):
+    scheduler.lazy_schedule()
     metas, out = scheduler.schedule()
     for s, meta in zip(out.scheduled_seq_groups, metas):
         s.seq_group.update_num_computed_tokens(meta.token_chunk_size)
+    scheduler.sync_running()
     return metas, out
 
+def test_class_convert():
+    block_size = 4
+    _, seq_group = create_dummy_prompt(str(0), prompt_length=block_size)
+    lazy_seq_group = LazySequenceGroup(seq_group)
+    # test inherite
+    append_new_token(seq_group, 1)
+    assert id(lazy_seq_group.get_seqs()[0].logical_token_blocks) == \
+        id(seq_group.get_seqs()[0].logical_token_blocks)
+    seq_group.request_id = '1'
+    assert seq_group.request_id == lazy_seq_group.request_id
+    # test convert to base class
+    lazy_seq_group.new_seq_states[0] = SequenceStatus.SWAPPED
+    assert len(lazy_seq_group.get_seqs(SequenceStatus.SWAPPED)) == 1
+    lazy_seq_group = lazy_seq_group.seq_group
+    assert len(lazy_seq_group.get_seqs(SequenceStatus.SWAPPED)) == 0, f"{lazy_seq_group.get_seqs()}"
+
+    new_seq_group = LazySequenceGroup(lazy_seq_group)
+    ano_seq_group = LazySequenceGroup(lazy_seq_group)
+    new_seq_group.lazy_state = LazyStates.SWAP
+    ano_seq_group.lazy_state = LazyStates.RECOMPUTE
+    assert ano_seq_group.lazy_state != new_seq_group.lazy_state
 
 def test_simple():
     """Verify basic scheduling works."""
@@ -52,17 +78,27 @@ def test_simple():
 
     # Schedule seq groups prompts.
     num_tokens = block_size * num_seq_group
-    seq_group_meta, out = schedule_and_update_computed_tokens(scheduler)
+    scheduler.lazy_schedule()
+    # seq_group_meta, out = schedule_and_update_computed_tokens(scheduler)
+    seq_group_meta, out = scheduler.schedule()
+    scheduler.lazy_schedule()
     assert set(get_sequence_groups(out)) == set(running)
     assert out.num_batched_tokens == num_tokens
     assert (not out.blocks_to_copy and not out.blocks_to_swap_in
             and not out.blocks_to_swap_out)
     assert len(seq_group_meta) == num_seq_group
+    assert all([s.is_prefill() for s in running])
+    assert all([not s.is_prefill() for s in scheduler.running])
     for s in running:
         append_new_token(s, 1)
+    for s, meta in zip(out.scheduled_seq_groups, seq_group_meta):
+        s.seq_group.update_num_computed_tokens(meta.token_chunk_size)
 
     # Schedule seq groups generation.
-    seq_group_meta, out = schedule_and_update_computed_tokens(scheduler)
+    # seq_group_meta, out = schedule_and_update_computed_tokens(scheduler)
+    seq_group_meta, out = scheduler.schedule()
+    for s, meta in zip(out.scheduled_seq_groups, seq_group_meta):
+        s.seq_group.update_num_computed_tokens(meta.token_chunk_size)
     assert set(get_sequence_groups(out)) == set(running)
     assert out.num_batched_tokens == num_seq_group
     assert (not out.blocks_to_copy and not out.blocks_to_swap_in
@@ -71,6 +107,60 @@ def test_simple():
     # All seq groups are in decoding phase, remaining decode >= 1
     assert all([s.remaining_decode >= 1 for s in running])
 
+def test_pipeline():
+    """Verify basic scheduling works."""
+    block_size = 4
+    num_seq_group = 4
+    max_model_len = 16
+    max_num_batched_tokens = 64
+    scheduler_config = SchedulerConfig(max_num_batched_tokens,
+                                       num_seq_group,
+                                       max_model_len,
+                                       enable_chunked_prefill=True)
+    cache_config = CacheConfig(block_size, 1.0, 1, "auto")
+    cache_config.num_cpu_blocks = 8
+    cache_config.num_gpu_blocks = 8
+    scheduler = Scheduler(scheduler_config, cache_config, None)
+    scheduler2 = Scheduler(scheduler_config, cache_config, None, queue_size=2) # pipeline
+    running: List[SequenceGroup] = []
+    running2: List[SequenceGroup] = []
+
+    # Add seq groups to scheduler.
+    for i in range(num_seq_group):
+        _, seq_group = create_dummy_prompt(str(i), prompt_length=block_size)
+        scheduler.add_seq_group(seq_group)
+        running.append(seq_group)
+
+        _, seq_group2 = create_dummy_prompt(str(i), prompt_length=block_size)
+        scheduler2.add_seq_group(seq_group2)
+        running2.append(seq_group2)
+
+    # Schedule seq groups prompts.
+    num_tokens = block_size * num_seq_group
+    seq_group_meta11, out11 = schedule_and_update_computed_tokens(scheduler)
+    for s in running:
+        append_new_token(s, 1)
+    seq_group_meta21, out21 = schedule_and_update_computed_tokens(scheduler)
+
+    scheduler2.lazy_schedule()
+    scheduler2.lazy_schedule()
+    seq_group_meta12, out12 = scheduler2.schedule()
+    for s, meta in zip(out12.scheduled_seq_groups, seq_group_meta12):
+        s.seq_group.update_num_computed_tokens(meta.token_chunk_size)
+    for s in running2:
+        append_new_token(s, 1)
+    seq_group_meta22, out22 = scheduler2.schedule()
+
+    for meta1, meta2 in zip(seq_group_meta11, seq_group_meta12):
+        for key in vars(meta1):
+            assert str(meta1.__dict__[key]) == str(meta2.__dict__[key])
+
+    for meta1, meta2 in zip(seq_group_meta21, seq_group_meta22):
+        for key in vars(meta1):
+            assert str(meta1.__dict__[key]) == str(meta2.__dict__[key])
+
+    assert str(out11) == str(out12)
+    assert str(out21) == str(out22)
 
 def test_chunk():
     """Verify prefills are chunked properly."""
@@ -376,10 +466,14 @@ def test_swap():
     # The last request should be swapped out.
     scheduler.block_manager.can_append_slots = MagicMock()
 
-    def cannot_append_second_group(seq_group, num_lookahead_slots):
+    def cannot_append_second_group(seq_group, num_lookahead_slots=0):
         return seq_group.request_id != "1"
 
     scheduler.block_manager.can_append_slots.side_effect = (
+        cannot_append_second_group)
+
+    scheduler._maybe_can_append_slots = MagicMock()
+    scheduler._maybe_can_append_slots.side_effect = (
         cannot_append_second_group)
 
     # The running prefill is now swapped.
@@ -427,10 +521,14 @@ def test_running_prefill_prioritized_over_swap():
     # The request should be swapped out.
     scheduler.block_manager.can_append_slots = MagicMock()
 
-    def cannot_append_second_group(seq_group, num_lookahead_slots):
+    def cannot_append_second_group(seq_group, num_lookahead_slots=0):
         return seq_group.request_id != "1"
 
     scheduler.block_manager.can_append_slots.side_effect = (
+        cannot_append_second_group)
+    
+    scheduler._maybe_can_append_slots = MagicMock()
+    scheduler._maybe_can_append_slots.side_effect = (
         cannot_append_second_group)
 
     # The running prefill is now swapped.
@@ -444,6 +542,9 @@ def test_running_prefill_prioritized_over_swap():
     scheduler.block_manager.can_swap_in = MagicMock()
     scheduler.block_manager.can_swap_in.return_value = AllocStatus.LATER
 
+    scheduler._maybe_can_swap_in = MagicMock()
+    scheduler._maybe_can_swap_in.return_value = AllocStatus.LATER
+
     _, seq_group2 = create_dummy_prompt("2", prompt_length=60)
     scheduler.add_seq_group(seq_group2)
     _, out = schedule_and_update_computed_tokens(scheduler)
@@ -456,6 +557,7 @@ def test_running_prefill_prioritized_over_swap():
 
     # Now although swap is possible, running prefill is prioritized.
     scheduler.block_manager.can_swap_in.return_value = AllocStatus.OK
+    scheduler._maybe_can_swap_in.return_value = AllocStatus.OK
     _, out = schedule_and_update_computed_tokens(scheduler)
     assert len(out.scheduled_seq_groups) == 1
     # 3 decodes. It is swapped in.
@@ -514,10 +616,14 @@ def test_chunked_prefill_preempt():
     # The request should be preempted.
     scheduler.block_manager.can_append_slots = MagicMock()
 
-    def cannot_append_second_group(seq_group, num_lookahead_slots):
+    def cannot_append_second_group(seq_group, num_lookahead_slots=0):
         return seq_group.request_id != "1"
 
     scheduler.block_manager.can_append_slots.side_effect = (
+        cannot_append_second_group)
+
+    scheduler._maybe_can_append_slots = MagicMock()
+    scheduler._maybe_can_append_slots.side_effect = (
         cannot_append_second_group)
 
     # The running prefill is now preempted.
@@ -536,10 +642,12 @@ def test_chunked_prefill_preempt():
     assert seq_group.get_num_uncomputed_tokens() == 30
 
     # We should be able to run prefill twice as it is chunked.
-    def cannot_append_second_group(seq_group, num_lookahead_slots):
+    def cannot_append_second_group(seq_group, num_lookahead_slots=0):
         return True
 
     scheduler.block_manager.can_append_slots.side_effect = (
+        cannot_append_second_group)
+    scheduler._maybe_can_append_slots.side_effect = (
         cannot_append_second_group)
     _, out = schedule_and_update_computed_tokens(scheduler)
     assert len(out.scheduled_seq_groups) == 1

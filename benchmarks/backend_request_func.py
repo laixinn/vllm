@@ -33,13 +33,20 @@ class RequestFuncOutput:
         default_factory=list)  # List of inter-token latencies
     token_cnt: List[int] = field(
         default_factory=list)  # List of token counts
+    prompt_len: int = 0
+    error: str = ""
+    
+    st: float = 0.0 # abstract start time
+    # Following metrics is the gap from arrival time
     rt: float = 0.0 # Response time
+    at: float = 0.0 # Arrival time
     enque_times: List[float] = field(
         default_factory=list)  # List of enque times
     deque_times: List[float] = field(
         default_factory=list)  # List of deque times
-    prompt_len: int = 0
-    error: str = ""
+    decode_times: List[float] = field(
+        default_factory=list)  # List of decode times
+
 
 
 async def async_request_tgi(
@@ -441,11 +448,12 @@ async def async_request_openai_chat_completions_v2(
                             if delta.get("content", None) is not None:
                                 # First token
                                 if ttft == 0.0:
-                                    ttft = time.perf_counter() - st
+                                    ttft = timestamp - st
                                     output.ttft = ttft
+                                    output.st = st
 
                                 # Decoding phase
-                                if data.get("usage", None) is not None:
+                                elif data.get("usage", None) is not None:
                                     if output.rt == 0.0:
                                         output.rt = data["usage"]["first_scheduled_time"]
                                     output.itl.append(timestamp -
@@ -456,6 +464,7 @@ async def async_request_openai_chat_completions_v2(
 
                                     output.enque_times += data["usage"]["enque_times"]
                                     output.deque_times += data["usage"]["deque_times"]
+                                    output.decode_times += data["usage"]["decode_times"]
 
                                 generated_text += delta["content"]
 

@@ -35,6 +35,14 @@ class RandomLength(LengthPredictor):
             pred_length = 2*decoding_length
             seq_group.remaining_decode = pred_length
 
+    def assign_one(self, seq_group: SequenceGroup) -> None:
+        # update remaining decode only when seq is just scheduled into running
+        decoding_length = seq_group.get_seqs()[0].get_prompt_len()
+        assert decoding_length > 0
+        # pred_length = random.randint(decoding_length, decoding_length*2)
+        pred_length = 2*decoding_length
+        seq_group.remaining_decode = pred_length
+
     # def predict(self, running_queue: List[SequenceGroup]) -> deque:
     #     '''
     #     prediction of the length of the sequence'''

@@ -649,6 +649,7 @@ class OpenAIServingChatV2(OpenAIServing):
         previous_texts = [""] * request.n
         previous_num_tokens = [0] * request.n
         finish_reason_sent = [False] * request.n
+        decode_times = [0] * request.n
         try:
             async for res in result_generator:
                 # We need to do it here, because if there are exceptions in
@@ -724,6 +725,7 @@ class OpenAIServingChatV2(OpenAIServing):
                     delta_text = output.text[len(previous_texts[i]):]
                     previous_texts[i] = output.text
                     previous_num_tokens[i] = len(output.token_ids)
+                    decode_times[i] = time.time() - res.metrics.arrival_time
                     if output.finish_reason is None:
                         # Send token-by-token response for each request.n
                         choice_data = ChatCompletionResponseStreamChoice(
@@ -752,9 +754,10 @@ class OpenAIServingChatV2(OpenAIServing):
                             completion_tokens=previous_num_tokens[i],
                             total_tokens=prompt_tokens +
                             previous_num_tokens[i],
-                            first_scheduled_time=res.metrics.first_scheduled_time - res.metrics.arrival_time,
+                            first_scheduled_time=res.metrics.time_in_queue,
                             enque_times=res.metrics.every_enqueue_time,
                             deque_times=res.metrics.every_deque_time,
+                            decode_times=decode_times,
                         )
 
                         choice_data = ChatCompletionResponseStreamChoice(

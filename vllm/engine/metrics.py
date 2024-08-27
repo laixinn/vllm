@@ -199,6 +199,16 @@ class Stats:
 
     spec_decode_metrics: Optional["SpecDecodeWorkerMetrics"] = None
 
+    avg_schedule_ratio: Optional[float] = None
+    avg_forward_ratio: Optional[float] = None
+    avg_output_ratio: Optional[float] = None
+    avg_pipeline_ratio: Optional[float] = None
+    avg_cache_ratio: Optional[float] = None
+    avg_pipeline_loss: Optional[float] = None
+    avg_pipeline_event_loss: Optional[float] = None
+    avg_pipeline_schedule_loss: Optional[float] = None
+    sum_time: Optional[float] = None
+
 
 class SupportsMetricsInfo(Protocol):
 
@@ -352,6 +362,17 @@ class StatLogger:
                 stats.gpu_cache_usage_sys * 100,
                 stats.cpu_cache_usage_sys * 100,
             )
+
+            logger.info(f"Avg time consumption in one iteration: " + 
+                        f"{stats.sum_time:.2f}s, " +
+                        f"{stats.avg_schedule_ratio: .2f}% for schedule," + 
+                        f"{stats.avg_forward_ratio: .2f}% for forward," +
+                        f"{stats.avg_output_ratio: .2f}% for output," + 
+                        f"{stats.avg_pipeline_loss: .2f}% for loss," + 
+                        f"{stats.avg_pipeline_event_loss: .2f}% for event loss," + 
+                        f"{stats.avg_pipeline_schedule_loss: .2f}% for schedule loss," + 
+                        f"{stats.avg_pipeline_ratio: .2f}% for pipeline," + 
+                        f"{stats.avg_cache_ratio: .2f}% for cache.")
 
             # Reset tracked stats for next interval.
             self.num_prompt_tokens = []

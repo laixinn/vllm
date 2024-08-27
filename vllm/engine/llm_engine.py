@@ -13,7 +13,7 @@ from vllm.config import (CacheConfig, DecodingConfig, DeviceConfig, LoadConfig,
                          VisionLanguageConfig)
 from vllm.core.scheduler import (ScheduledSequenceGroup, Scheduler,
                                  SchedulerOutputs)
-from vllm.core.scheduler_v2 import SchedulerV2, SchedulerV1, SchedulerV0
+from vllm.core.scheduler_v2 import LazyScheduler, SchedulerV2, SchedulerV1, SchedulerV0, SchedulerV3
 from vllm.engine.arg_utils import EngineArgs
 from vllm.engine.metrics import StatLogger, Stats
 from vllm.engine.output_processor.interfaces import (
@@ -280,6 +280,10 @@ class LLMEngine:
         # GPU and CPU blocks, which are profiled in the distributed executor.
         if scheduler_config.scheduler_priority == "fcfs":
             self.scheduler = Scheduler(scheduler_config, cache_config, lora_config)
+        elif scheduler_config.scheduler_priority == "lazy":
+            self.scheduler = LazyScheduler(scheduler_config, cache_config, lora_config)
+        elif scheduler_config.scheduler_priority == "v3":
+            self.scheduler = SchedulerV3(scheduler_config, cache_config, lora_config)
         elif scheduler_config.scheduler_priority == "v2":
             self.scheduler = SchedulerV2(scheduler_config, cache_config, lora_config)
         elif scheduler_config.scheduler_priority == "v1":
@@ -945,6 +949,33 @@ class LLMEngine:
         else:
             spec_decode_metrics = None
 
+        avg_schedule_time = sum(self.schedule_consumption)/len(self.schedule_consumption) \
+            if self.schedule_consumption else 0
+        avg_forward_time = sum(self.forward_consumption)/len(self.forward_consumption) \
+            if self.forward_consumption else 0
+        avg_output_time = sum(self.output_consumption)/len(self.output_consumption) \
+            if self.output_consumption else 0
+        avg_pipeline_time = sum(self.pipeline_consumption)/len(self.pipeline_consumption) \
+            if self.pipeline_consumption else 0
+        avg_cache_time = sum(self.schedule_cache_consumption)/len(self.schedule_cache_consumption) \
+            if self.schedule_cache_consumption else 0
+        avg_pipeline_loss = sum(self.pipeline_loss)/len(self.pipeline_loss) \
+            if self.pipeline_loss else 0
+        avg_pipeline_event_loss = sum(self.pipeline_event_loss)/len(self.pipeline_event_loss) \
+            if self.pipeline_event_loss else 0
+        avg_pipeline_schedule_loss = sum(self.pipeline_schedule_loss)/len(self.pipeline_schedule_loss) \
+            if self.pipeline_schedule_loss else 0
+        
+        sum_time = avg_schedule_time + avg_forward_time + avg_output_time or 1
+        avg_schedule_ratio = 100.0 * avg_schedule_time / sum_time
+        avg_forward_ratio = 100.0 * avg_forward_time / sum_time
+        avg_output_ratio = 100.0 * avg_output_time / sum_time
+        avg_pipeline_ratio = 100.0 * avg_pipeline_time / sum_time
+        avg_cache_ratio = 100.0 * avg_cache_time / sum_time
+        avg_pipeline_loss = 100.0 * avg_pipeline_loss / sum_time
+        avg_pipeline_event_loss = 100.0 * avg_pipeline_event_loss / sum_time
+        avg_pipeline_schedule_loss = 100.0 * avg_pipeline_schedule_loss / sum_time
+
         return Stats(
             now=now,
             # System stats
@@ -973,6 +1004,16 @@ class LLMEngine:
             best_of_requests=best_of_requests,
             n_requests=n_requests,
             finished_reason_requests=finished_reason_requests,
+
+            avg_schedule_ratio=avg_schedule_ratio,
+            avg_forward_ratio=avg_forward_ratio,
+            avg_output_ratio=avg_output_ratio,
+            avg_pipeline_ratio=avg_pipeline_ratio,
+            avg_cache_ratio=avg_cache_ratio,
+            avg_pipeline_loss=avg_pipeline_loss,
+            avg_pipeline_event_loss=avg_pipeline_event_loss,
+            avg_pipeline_schedule_loss=avg_pipeline_schedule_loss,
+            sum_time=sum_time
         )
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
