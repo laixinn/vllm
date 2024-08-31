@@ -35,6 +35,19 @@ class FCFS(Policy):
     ) -> float:
         return now - seq_group.metrics.arrival_time
     
+class RoundRobin(Policy):
+
+    def get_priority(
+        self,
+        now: float,
+        seq_group: SequenceGroup,
+    ) -> float:
+        if seq_group.metrics.first_token_time is None:
+            return now - seq_group.metrics.arrival_time
+        else:
+            return now - seq_group.metrics.last_token_time
+        # return now - seq_group.metrics.arrival_time
+    
     
 class StrictDecodeFirst(Policy):
     def __init__(self, max_length=30) -> None:
@@ -56,7 +69,7 @@ class StrictDecodeFirst(Policy):
 
 class PolicyFactory:
 
-    _POLICY_REGISTRY = {'fcfs': FCFS, 'sdf': StrictDecodeFirst}
+    _POLICY_REGISTRY = {'fcfs': FCFS, 'sdf': StrictDecodeFirst, 'rr': RoundRobin}
 
     @classmethod
     def get_policy(cls, policy_name: str, **kwargs) -> Policy:

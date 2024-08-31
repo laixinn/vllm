@@ -13,7 +13,6 @@ from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
                            SequenceGroupMetadata, SequenceStatus)
-from vllm.core.length_predictor import RandomLength
 from vllm.core.policy import PolicyFactory, Policy
 
 logger = init_logger(__name__)

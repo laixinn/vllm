@@ -9,6 +9,7 @@ from vllm.core.scheduler import *
 from vllm.core.block.utils import check_no_caching_or_swa_for_blockmgr_encdec
 from vllm.block import BlockTable, PhysicalTokenBlock
 from vllm.sequence import SequenceGroup, SequenceStage
+from vllm.core.fixation_model.length_predictor import RandomLength, ModelPredictor
 
 TEST = 1
 
@@ -865,9 +866,9 @@ def knapsack(
         selected_items[0][0] = 0
         return best_T, selected_items
         
-    original_weights = [item for item in weights]
-    original_max_weights = [item for item in max_weights]
-    original_M = M
+    # original_weights = [item for item in weights]
+    # original_max_weights = [item for item in max_weights]
+    # original_M = M
     # normalization
     norm_term = max(min(weights), min(max_weights))
     weights = [math.ceil(item/norm_term) for item in weights]
@@ -889,9 +890,9 @@ def knapsack(
     selected_path = [[[0]*(N+1) for _ in range(M+1)] for _ in range(max_T)]
     update_path = [[-1]*(M+1) for _ in range(max_T)]
 
-    visited_path = [[[0]*(N+1) for _ in range(M+1)] for _ in range(max_T)]
-    dp_path = [[0]*(M+1) for _ in range(max_T)]
-    growth_path = [[[0]*(N+1) for _ in range(M+1)] for _ in range(max_T)]
+    # visited_path = [[[0]*(N+1) for _ in range(M+1)] for _ in range(max_T)]
+    # dp_path = [[0]*(M+1) for _ in range(max_T)]
+    # growth_path = [[[0]*(N+1) for _ in range(M+1)] for _ in range(max_T)]
 
     best_T, final_idx = 0, -1
     last_visited = [[0]*(N+1) for _ in range(M+1)]
@@ -1004,9 +1005,9 @@ def knapsack(
         selected_path[t] = selected[N]
         update_path[t] = update_from[N]
 
-        visited_path[t] = visited[N]
-        dp_path[t] = dp[N]
-        growth_path[t] = alread_growth[N]
+        # visited_path[t] = visited[N]
+        # dp_path[t] = dp[N]
+        # growth_path[t] = alread_growth[N]
 
         if t % 128 == 0:
             # delta = min(64, delta*2)
@@ -1075,12 +1076,14 @@ class SchedulerV3(SchedulerV2):
         self.extra_waiting = deque()
         self.unscheduled = set()
 
+        self.length_predictor = ModelPredictor()
+
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
         self.waiting.append(seq_group)
         self.extra_waiting.append(seq_group)
   
-    def pre_schedule(self, block_ratio=0.025, max_seq=100) -> None:
+    def pre_schedule(self, block_ratio=0.025, max_seq=20) -> None:
         # NOTE: ensure remaining_decode is updated before pre_schedule
         def token_to_block(num_token: int) -> int:
             return num_token // self.block_manager.block_size + 1
@@ -1092,24 +1095,27 @@ class SchedulerV3(SchedulerV2):
             assert num_extra >= 0 and num_decode>0
             return num_prompt, num_decode, num_extra
 
-        # # sort
-        # now = time.time()
-        # policy = PolicyFactory.get_policy(policy_name="sdf")
-        # waiting = policy.sort_by_priority(now, self.waiting)
+        # sort
+        now = time.time()
+        policy = PolicyFactory.get_policy(policy_name="rr")
+        waiting = list(policy.sort_by_priority(now, self.waiting))
 
-        waiting = list(self.waiting)
+        # waiting = list(self.waiting)
         all_items = waiting[:max_seq]
         self.extra_waiting = deque(waiting[max_seq:])
+        N = len(all_items)
         # assign remaining_decode
+        assign_mode = None
+        if N == 1:
+            assign_mode = "prompt"
         for item in all_items:
             if item.is_prefill() and item.remaining_decode == 0:
-                self.length_predictor.assign_one(item)
+                self.length_predictor.assign_one(item, mode=assign_mode)
                 item.just_end = 0
         results = [compute_weights(item) for item in all_items]
         weights = numba.typed.List([item[0] for item in results])
         max_weights = numba.typed.List([item[1] for item in results])
-        extra = sum([item[2] for item in results])
-        N = len(all_items)
+        # extra = sum([item[2] for item in results])
         # M = int(block_ratio * self.block_manager.get_num_free_gpu_blocks()) * self.block_manager.block_size - extra
         # M = max(weights)+max(max_weights)
         M = sum(weights) + max(max_weights)
