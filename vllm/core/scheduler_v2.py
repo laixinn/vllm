@@ -1190,6 +1190,23 @@ class SchedulerV3(SchedulerV2):
         self.running = deque(seq_group for seq_group in self.running
                              if not seq_group.is_finished())
 
+    def abort_seq_group(self, request_id: Union[str, Iterable[str]]) -> None:
+        """Aborts a sequence group with the given ID.
+
+        Check if the sequence group with the given ID
+            is present in any of the state queue.
+        If present, remove the sequence group from the state queue.
+            Also, if any of the sequences in the sequence group is not finished,
+                free the sequence with status `FINISHED_ABORTED`.
+        Otherwise, do nothing.
+
+        Args:
+            request_id: The ID(s) of the sequence group to abort.
+        """
+        self.idx_to_seq = {key:seq for key, seq in self.idx_to_seq.items() if seq.request_id not in request_id}
+        self.extra_waiting = deque(seq for seq in self.extra_waiting if seq.request_id not in request_id)
+        super().abort_seq_group(request_id)
+
     def _schedule_chunked_prefill_with_predicted_length(self) -> SchedulerOutputs:
         """Schedule queued requests.
         

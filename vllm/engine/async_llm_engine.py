@@ -1237,8 +1237,15 @@ class AsyncLLMEngine:
             if not self.local_stream.empty():
                 # logger.info(f"Starting engine step with {self.engine.scheduler.get_num_running_requests()} requests")
                 request_outputs = self.local_stream.get_long_outputs()
+                
                 for request_output in request_outputs:
-                    self._request_tracker.process_request_output(request_output)
+                    try:
+                        self._request_tracker.process_request_output(request_output)
+                    except (Exception, asyncio.CancelledError) as e:
+                        self._request_tracker.abort_request(request_output.request_id)
+                        # self._abort(request_id)
+                        # raise e
+                        logger.warning(f"stream thread caught cancel, abort {request_output.request_id}")
                     
                 cur_time = time.time()
                 if self.last_time is None:
