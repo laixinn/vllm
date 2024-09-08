@@ -66,10 +66,20 @@ class StrictDecodeFirst(Policy):
         if hasattr(seq_group, 'just_end'):
             sort_score *= int(not seq_group.just_end)
         return sort_score
+    
+class Keep(Policy):
+
+    def get_priority(
+        self,
+        now: float,
+        seq_group: SequenceGroup,
+    ) -> float:
+        return 1
 
 class PolicyFactory:
 
-    _POLICY_REGISTRY = {'fcfs': FCFS, 'sdf': StrictDecodeFirst, 'rr': RoundRobin}
+    _POLICY_REGISTRY = {'fcfs': FCFS, 'sdf': StrictDecodeFirst, 
+                        'rr': RoundRobin, 'keep': Keep}
 
     @classmethod
     def get_policy(cls, policy_name: str, **kwargs) -> Policy:

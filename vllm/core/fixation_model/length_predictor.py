@@ -52,13 +52,14 @@ class RandomLength:
             pred_length = 2*decoding_length
             seq_group.remaining_decode = pred_length
 
-    def assign_one(self, seq_group: SequenceGroup, mode: str = None) -> None:
+    def assign_one(self, seq_group: SequenceGroup, mode: str = None, max_length=50) -> None:
         # update remaining decode only when seq is just scheduled into running
         decoding_length = seq_group.get_seqs()[0].get_prompt_len()
         assert decoding_length > 0
         # pred_length = random.randint(decoding_length, decoding_length*2)
         pred_length = int(1.0*decoding_length)
-        seq_group.remaining_decode = pred_length
+        seq_group.remaining_decode = max(pred_length, 25)
+        # seq_group.remaining_decode = min(pred_length, max_length)
 
     # def predict(self, running_queue: List[SequenceGroup]) -> deque:
     #     '''
@@ -146,4 +147,4 @@ class ModelPredictor(RandomLength):
             pred_length = self.model.predict(token_ids, token_lengths)
             # print(f"Time for prediction: {time.time()-t1}, time for data: {t1-t0}")
 
-            seq_group.remaining_decode = max(pred_length, 10)
+            seq_group.remaining_decode = max(int(pred_length*1.5), 25)

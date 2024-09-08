@@ -190,6 +190,7 @@ class Eyettention:
         self.model_path: str = model_path
         self.max_sequence_length: int = max_sequence_length
         self.bert_model_path = bert_model_path
+        self.device = 'cuda:1'
         self.model = self._load_model()
         self.tokenizer = BertTokenizer.from_pretrained(BERT_path)
 
@@ -202,7 +203,7 @@ class Eyettention:
         """
         model = EyettentionModified_online_n(self.bert_model_path)
         model.load_state_dict(torch.load(self.model_path), strict=False)
-        model = model.to('cuda')
+        model = model.to(self.device)
         model.eval()
         return model
     
@@ -240,8 +241,8 @@ class Eyettention:
         Returns:
         - predicted_fixation_index (np.ndarray): 预测的fixation索引
         """
-        token_IDs = torch.tensor(token_IDs, dtype=torch.long).to('cuda') # token_IDs.shape = torch.Size([1, 10])
-        token_lengths = torch.tensor(token_lengths, dtype=torch.float).to('cuda') # token_lengths.shape = torch.Size([1, 10])
+        token_IDs = torch.tensor(token_IDs, dtype=torch.long).to(self.device) # token_IDs.shape = torch.Size([1, 10])
+        token_lengths = torch.tensor(token_lengths, dtype=torch.float).to(self.device) # token_lengths.shape = torch.Size([1, 10])
 
         with torch.no_grad():
             output = self.model(token_IDs, token_lengths) # type(output) = <class 'torch.Tensor'>  output.shape = torch.Size([1])

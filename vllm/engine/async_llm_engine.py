@@ -1048,12 +1048,13 @@ class AsyncLLMEngine:
 
             logger.info("Pipeline engine started.")
         else:
-            if getattr(self.engine.scheduler, "best_t", None) is not None:
-                self.local_stream = LocalStreamV1()
-                self.stream_thread = Thread(target=self.engine_async_stream_thread_v1, daemon=True)
-                self.stream_thread.start()
-            else:
-                self.local_stream = None
+            # if getattr(self.engine.scheduler, "best_t", None) is not None:
+            #     self.local_stream = LocalStreamV1()
+            #     self.stream_thread = Thread(target=self.engine_async_stream_thread_v1, daemon=True)
+            #     self.stream_thread.start()
+            # else:
+            #     self.local_stream = None
+            self.local_stream = None
 
             self._background_loop_unshielded = asyncio.get_event_loop(
             ).create_task(self.run_engine_loop())
