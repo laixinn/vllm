@@ -1,8 +1,7 @@
 **Deployment Guideline**
-1. Please down model checkpoint and tokenizer from [google drive](https://drive.google.com/file/d/1eQJ_2uW2Wjfey-0Y6hHASKDyRLPCm5uX/view?usp=sharing), and put them in this dir. The file tree should end up with:
+1. Please down model checkpoint and tokenizer from [google drive](https://drive.google.com/file/d/1eQJ_2uW2Wjfey-0Y6hHASKDyRLPCm5uX/view?usp=sharing), and put them in into `vllm/core/fixation_model/`. The file tree should end up with:
 ```bash
-.
-|-- README.md
+vllm/core/fixation_model/
 |-- bert_tokenizer
 |   |-- bert_config.json
 |   |-- bert_model.ckpt.data-00000-of-00001
