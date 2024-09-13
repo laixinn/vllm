@@ -13,4 +13,5 @@ vllm/core/fixation_model/
 |-- eye_movement.py
 |-- eyettention_model_TECO_n.pth
 `-- length_predictor.py
+```
 2. To avoid GPU memory overflow, the fixation model runs on 'cuda:1'. Thus deploying this system requires dual gpus on one machine.
